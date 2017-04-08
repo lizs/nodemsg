@@ -1,74 +1,78 @@
 'use strict'
 const packer = require('./packer.js')
-const events = require('events')
+const defines = require('./defines.js')
 
-const HeaderSize = 2;
-const MaxPackageSize = 32;
+const NetError = defines.NetError
+const HeaderSize = defines.HeaderSize
+const SerialSize = defines.SerialSize
+const ErrorNoSize = defines.ErrorNoSize
+const MaxPackageSize = defines.MaxPackageSize
+const PatternSize = defines.PatternSize
+const Pattern = defines.Pattern
 
-const PatternSize = 1;
-const Pattern = {
-    Push: 0,
-    Request: 1,
-    Response: 2,
-    Ping: 3,
-    Pong: 4,
-}
-
-const PatternName = [
-    'Push',
-    'Request',
-    'Response',
-    'Ping',
-    'Pong',
-]
-
-var session = class Session{
-    constructor(socket, smgr, id){
+var session = class Session {
+    constructor(socket, id) {
         this.id = id
         this.socket = socket
-        this.sessionMgr = smgr
-        this.emitter = new events.EventEmitter()
-        
-        this.bodyLen = 0;
-        this.offset = 0;
-        this.headerFilled = 0;
+        this.socket.setNoDelay(true)
+
+        this.requestPool = {}
+        this.serialSeed = 0
+
+        this.bodyLen = 0
+        this.offset = 0
+        this.headerFilled = 0
         this.header = Buffer.allocUnsafe(HeaderSize).fill(0);
+
+        this.handler = null
     }
 
     close() {
         this.socket.destroy()
-        console.log('session closed.');
+        console.log('session closed.')
     }
 
     request(message, cb) {
+        // 分配序列号
+        let seirial = ++this.serialSeed
 
-    }
+        // 插入请求池
+        if (this.requestPool[serial]) {
+            if (cb) {
+                cb(NetError.NE_SerialConflict, null)
+            }
 
-    push(message) {
-        this._send(Pattern.Push, message)
-    }
-
-    _send(pattern, message) {
-        let size = PatternSize
-        if (message) {
-            size += message.length
+            return
         }
 
-        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
-        buf.writeUInt16LE(size)
-        buf.writeUInt8(pattern, HeaderSize)
-        if (message) {
-            message.copy(buf, HeaderSize + PatternSize, 0, message.length)
-        }
+        this.requestPool[serial] = cb
 
-        this.socket.write(buf, (err) => {
-            if (err) {
-                console.log(err)
+        // 发送
+        this._send_with_serial(Pattern.Request, serial, (success) => {
+            if (!success) {
+                this.requestPool[serial] = null
+                if (cb) {
+                    cb(false, null)
+                }
             }
         })
     }
 
-    _pong(){
+    push(message, cb) {
+        this._send(Pattern.Push, message, cb)
+    }
+
+    onPush(message) {
+        this.handler.onPush(this, message)
+    }
+
+    onRequest(message, cb) {
+        this.handler.onRequest(this, message, (en, respMsg) => {
+            cb(en, respMsg)
+        })
+    }
+
+    _pong() {
         this._send(Pattern.Pong);
     }
 
@@ -76,9 +80,9 @@ var session = class Session{
         this.close()
     }
 
-    _onData(chunk){
+    _onData(chunk) {
         if (!this._pack(chunk)) {
-            this.destroy()
+            this.close()
         }
     }
 
@@ -86,22 +90,56 @@ var session = class Session{
         console.log(err);
     }
 
-    _onPush(message){
-        this.push(message)
+    _onPush(message) {
+        this.onPush(message)
     }
 
-    _onPing(message){
+    _onPing(message) {
         this._pong()
     }
 
-    _onPong(message){
+    _onPong(message) {
+    }
 
+    _onRequest(message) {
+        let serial = message.readUInt16LE()
+
+        let self = this
+        let msg = message.slice(SerialSize)
+
+        this.onRequest(msg, (en, respMsg) => {
+            self._response(en, serial, respMsg)
+        });
+    }
+
+    _response(en, serial, respMsg) {
+        this._send_with_serial_en(Pattern.Response, serial, en, respMsg);
+    }
+
+    _onResponse(message) {
+        // 读序列号
+        let serial = message.readUInt16LE()
+        let cb = this.requestPool[serial]
+        if (!cb) {
+            console.write("response serial %d not found", serial);
+            return;
+        }
+
+        // 错误码
+        let en = message.readUInt16LE(SerialSize)
+
+        // 回调
+        let msg = message.slice(SerialSize + ErrorNoSize)
+        cb(en, msg)
+
+        // 清除
+        this.requestPool[serial] = null
     }
 
     _onMessage(raw) {
+        //console.log("read : ", raw);
         let pattern = raw.readUInt8()
         let message = raw.slice(PatternSize)
-        console.log(PatternName[pattern], ' : ', message.toString('ascii'))
         switch (pattern) {
             case Pattern.Push:
                 this._onPush(message)
@@ -121,12 +159,78 @@ var session = class Session{
         }
     }
 
+    _send_imp(buf, cb) {
+        //console.log("send : ", buf);
+        this.socket.write(buf, (err) => {
+            if (err) {
+                console.log(err)
+                if (cb) {
+                    cb(NE_Write)
+                }
+            } else {
+                if (cb) {
+                    cb(Success)
+                }
+            }
+        })
+    }
+
+    _send_with_serial_en(pattern, serial, en, message, cb) {
+        let size = PatternSize + SerialSize + ErrorNoSize
+        if (message) {
+            size += message.length
+        }
+
+        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
+        buf.writeUInt16LE(size)
+        buf.writeUInt8(pattern, HeaderSize)
+        buf.writeUInt16LE(serial, HeaderSize + PatternSize)
+        buf.writeUInt16LE(en, HeaderSize + PatternSize + SerialSize)
+        if (message) {
+            message.copy(buf, HeaderSize + PatternSize + SerialSize + ErrorNoSize, 0, message.length)
+        }
+
+        this._send_imp(buf, cb)
+    }
+
+    _send_with_serial(pattern, serial, message, cb) {
+        let size = PatternSize + SerialSize
+        if (message) {
+            size += message.length
+        }
+
+        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
+        buf.writeUInt16LE(size)
+        buf.writeUInt8(pattern, HeaderSize)
+        buf.writeUInt8(serial, HeaderSize + PatternSize)
+        if (message) {
+            message.copy(buf, HeaderSize + PatternSize + SerialSize, 0, message.length)
+        }
+
+        this._send_imp(buf, cb)
+    }
+
+    _send(pattern, message, cb) {
+        let size = PatternSize
+        if (message) {
+            size += message.length
+        }
+
+        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
+        buf.writeUInt16LE(size)
+        buf.writeUInt8(pattern, HeaderSize)
+        if (message) {
+            message.copy(buf, HeaderSize + PatternSize, 0, message.length)
+        }
+
+        this._send_imp(buf, cb)
+    }
+
     _pack(chunk, window = { offset: 0 }) {
         if (chunk.length === window.offset) {
             return true;
         }
 
-        // package headerExtracted ?
         if (this._packFinished()) {
             this.bodyLen = 0
             this.offset = 0
@@ -134,17 +238,14 @@ var session = class Session{
             this.header.fill(0)
 
             this._onMessage(this.buf)
-            //console.log("Extracted : ", this.buf.toString('ascii'));
         }
 
         if (this.bodyLen !== 0) {
             this._packWrite(chunk, window);
-
             return this._pack(chunk, window)
         }
         else {
             this._packWriteHeader(chunk, window)
-
             if (!this._packHeader(chunk)) {
                 return false;
             }
@@ -194,7 +295,7 @@ var session = class Session{
         let size = Math.min(buffer.length, this.header.length - this.headerFilled)
         buffer.copy(this.header, this.headerFilled, wind.offset, wind.offset + size)
         this.headerFilled += size
-        wind.offset += HeaderSize;
+        wind.offset += size;
     }
 }
 

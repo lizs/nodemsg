@@ -9,23 +9,23 @@ var sessionMgr = class SessionMgr {
 
     makeSession(socket) {
         let id = ++this.session_id_seed
-        let session = new Session(socket, this, id)
+        let session = new Session(socket, id)
         socket.session = session
         this.sessions[id] = session
 
         return session
     }
 
-    close(id){
+    close(id) {
         let session = this.sessions[id]
         this.remove(id)
 
-        if(session){
+        if (session) {
             session.close()
         }
     }
 
-    remove(id){
+    remove(id) {
         this.sessions[id] = null
     }
 }
