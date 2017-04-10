@@ -1,5 +1,4 @@
 'use strict'
-const packer = require('./packer.js')
 const defines = require('./defines.js')
 
 const NetError = defines.NetError
@@ -227,10 +226,6 @@ var session = class Session {
     }
 
     _pack(chunk, window = { offset: 0 }) {
-        if (chunk.length === window.offset) {
-            return true;
-        }
-
         if (this._packFinished()) {
             this.bodyLen = 0
             this.offset = 0
@@ -238,6 +233,10 @@ var session = class Session {
             this.header.fill(0)
 
             this._onMessage(this.buf)
+        }
+
+        if (chunk.length === window.offset) {
+            return true;
         }
 
         if (this.bodyLen !== 0) {

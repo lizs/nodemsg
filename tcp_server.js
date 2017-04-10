@@ -3,7 +3,6 @@
 const net = require('net');
 const assert = require('assert')
 const session = require('./session.js')
-const packer = require('./packer.js')
 const sessionMgr = require('./session_mgr.js')
 var defaultHandler = require('./session_handler.js')
 

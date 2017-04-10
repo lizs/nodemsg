@@ -21,19 +21,19 @@ function main(arg) {
 
     switch (arg) {
         case 'client': {
-            let client = new tcpClient("127.0.0.1", 5002)
+            let client = new tcpClient("localhost", 5002)
             client.start()
             break
         }
 
         case 'server': {
-            let server = new tcpServer("127.0.0.1", 5002)
+            let server = new tcpServer("localhost", 5002)
             server.start()
             break
         }
 
         default:
-            let server = new tcpServer("127.0.0.1", 5002)
+            let server = new tcpServer("localhost", 5002)
             server.start()
             break
     }
