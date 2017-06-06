@@ -3,9 +3,10 @@ const defines = require('./defines.js')
 
 const NetError = defines.NetError
 const HeaderSize = defines.HeaderSize
+const PackCountSize = defines.PackageCountSize
 const SerialSize = defines.SerialSize
 const ErrorNoSize = defines.ErrorNoSize
-const MaxPackageSize = defines.MaxPackageSize
+const MaxBodySize = defines.MaxPackageSize
 const PatternSize = defines.PatternSize
 const Pattern = defines.Pattern
 
@@ -23,14 +24,18 @@ var session = class Session {
         this.headerFilled = 0
         this.header = Buffer.allocUnsafe(HeaderSize).fill(0);
 
+        this.slices = []
+
         this.handler = null
     }
 
+    // 关闭
     close() {
         this.socket.destroy()
         console.log('session closed.')
     }
 
+    // 请求
     request(message, cb) {
         // 分配序列号
         let seirial = ++this.serialSeed
@@ -47,7 +52,7 @@ var session = class Session {
         this.requestPool[serial] = cb
 
         // 发送
-        this._send_with_serial(Pattern.Request, serial, (success) => {
+        this._send(Pattern.Request, serial, null, message, (success) => {
             if (!success) {
                 this.requestPool[serial] = null
                 if (cb) {
@@ -57,49 +62,60 @@ var session = class Session {
         })
     }
 
+    // 推送
     push(message, cb) {
-        this._send(Pattern.Push, message, cb)
+        this._send(Pattern.Push, null, null, message, cb)
     }
 
+    // 处理推送
     onPush(message) {
         this.handler.onPush(this, message)
     }
 
+    // 处理请求
     onRequest(message, cb) {
         this.handler.onRequest(this, message, (en, respMsg) => {
             cb(en, respMsg)
         })
     }
 
+    // Pong
     _pong() {
         this._send(Pattern.Pong);
     }
 
+    // 处理结束
     _onEnd() {
         this.close()
     }
 
+    // 处理socket数据
     _onData(chunk) {
-        if (!this._pack(chunk)) {
+        if (!this._extract(chunk)) {
             this.close()
         }
     }
 
+    // 处理错误
     _onError(err) {
         console.log(err);
     }
 
+    // 处理推送
     _onPush(message) {
         this.onPush(message)
     }
 
+    // 处理Ping
     _onPing(message) {
         this._pong()
     }
 
+    // 处理Pong
     _onPong(message) {
     }
 
+    // 处理请求
     _onRequest(message) {
         let serial = message.readUInt16LE()
 
@@ -111,10 +127,7 @@ var session = class Session {
         });
     }
 
-    _response(en, serial, respMsg) {
-        this._send_with_serial_en(Pattern.Response, serial, en, respMsg);
-    }
-
+    // 处理响应
     _onResponse(message) {
         // 读序列号
         let serial = message.readUInt16LE()
@@ -135,98 +148,174 @@ var session = class Session {
         this.requestPool[serial] = null
     }
 
+    // 处理消息
     _onMessage(raw) {
-        //console.log("read : ", raw);
+        let cnt = raw.readUInt8()
+        if (cnt < 1) {
+            this.close()
+            return
+        }
+
+        let slice = raw.slice(PackCountSize, raw.length - PackCountSize)
+        this.slices.push(slice)
+
+        if (cnt == 1) {
+            // 组包
+            let totalLen = 0;
+            for (let i = 0; i < this.slices.length; ++i) {
+                totalLen += this.slices[i].length
+            }
+
+            var message = Buffer.alloc(totalLen, 0)
+
+            let offset = 0
+            for (let i = 0; i < this.slices.length; ++i) {
+                this.slices[i].copy(message, offset, 0, this.slices[i].length)
+                offset += this.slices[i].length
+            }
+
+            // 清空slices
+            this.slices = []
+            
+            // 派发
+            this._dispatch(message)
+        }
+    }
+
+    // 派发消息
+    _dispatch(raw) {
         let pattern = raw.readUInt8()
-        let message = raw.slice(PatternSize)
+        let msg = raw.slice(PatternSize)
         switch (pattern) {
             case Pattern.Push:
-                this._onPush(message)
+                this._onPush(msg)
                 break
             case Pattern.Request:
-                this._onRequest(message)
+                this._onRequest(msg)
                 break
             case Pattern.Response:
-                this._onResponse(message)
+                this._onResponse(msg)
                 break
             case Pattern.Ping:
-                this._onPing(message)
+                this._onPing(msg)
                 break
             case Pattern.Pong:
-                this._onPong(message)
+                this._onPong(msg)
                 break
         }
     }
 
+    // 响应
+    _response(en, serial, respMsg) {
+        this._send(Pattern.Response, serial, en, respMsg);
+    }
+
+    // socket 写
     _send_imp(buf, cb) {
         //console.log("send : ", buf);
         this.socket.write(buf, (err) => {
             if (err) {
                 console.log(err)
                 if (cb) {
-                    cb(NE_Write)
+                    cb(NetError.NE_Write)
                 }
             } else {
                 if (cb) {
-                    cb(Success)
+                    cb(NetError.Success)
                 }
             }
         })
     }
 
-    _send_with_serial_en(pattern, serial, en, message, cb) {
-        let size = PatternSize + SerialSize + ErrorNoSize
+    // 写
+    _send(pattern, serial, en, message, cb) {
+        let buffers = this._pack_write(pattern, serial, en, message)
+
+        let left = buffers.length
+        let finished = true
+        for (let i = 0; i < buffers.length; ++i) {
+            this._send_imp(buffers[i], (success) => {
+                --left
+                finished &= success
+                if (left == 0) {
+                    if (cb)
+                        cb(finished)
+                }
+            })
+        }
+    }
+
+    // 写数据打包
+    _pack_write(pattern, serial, en, message) {
+        let size = PackCountSize + PatternSize
+
+        if (serial || serial == 0) {
+            size += SerialSize
+        }
+
+        if (en || en == 0) {
+            size += ErrorNoSize
+        }
+
         if (message) {
             size += message.length
         }
 
-        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
-        buf.writeUInt16LE(size)
-        buf.writeUInt8(pattern, HeaderSize)
-        buf.writeUInt16LE(serial, HeaderSize + PatternSize)
-        buf.writeUInt16LE(en, HeaderSize + PatternSize + SerialSize)
-        if (message) {
-            message.copy(buf, HeaderSize + PatternSize + SerialSize + ErrorNoSize, 0, message.length)
+        // 构造buf
+        let buf = Buffer.allocUnsafe(size).fill(0)
+        let offset = 0
+
+        buf.writeUInt8(pattern, offset) // Pattern
+        offset += PatternSize
+
+        if (serial || serial == 0) {
+            buf.writeUInt16LE(serial, offset)   // serial
+            offset += SerialSize
         }
 
-        this._send_imp(buf, cb)
+        if (en || en == 0) {
+            buf.writeUInt16LE(en, offset)    // error number
+            offset += ErrorNoSize
+        }
+
+        if (message) {
+            message.copy(buf, offset, 0, message.length)
+        }
+
+        // 拆分
+        let lastLen = size % MaxBodySize
+        let cnt = (size - lastLen) / MaxBodySize
+        if (lastLen != 0)
+            ++cnt;
+
+        let buffers = new Array()
+        for (let i = 0; i < cnt; ++i) {
+            let bodyLen = MaxBodySize
+            if (i == cnt - 1 && lastLen != 0) {
+                bodyLen = lastLen
+            }
+
+            let slice = Buffer.allocUnsafe(bodyLen + PackCountSize + HeaderSize).fill(0)
+            let offset = 0
+
+            slice.writeUInt16LE(bodyLen + PackCountSize, offset)
+            offset += HeaderSize
+
+            slice.writeUInt8(cnt - i, offset)
+            offset += PackCountSize
+
+            buf.copy(slice, offset, i * MaxBodySize, bodyLen)
+
+            // 添加
+            buffers.push(slice)
+        }
+
+        return buffers;
     }
 
-    _send_with_serial(pattern, serial, message, cb) {
-        let size = PatternSize + SerialSize
-        if (message) {
-            size += message.length
-        }
-
-        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
-        buf.writeUInt16LE(size)
-        buf.writeUInt8(pattern, HeaderSize)
-        buf.writeUInt8(serial, HeaderSize + PatternSize)
-        if (message) {
-            message.copy(buf, HeaderSize + PatternSize + SerialSize, 0, message.length)
-        }
-
-        this._send_imp(buf, cb)
-    }
-
-    _send(pattern, message, cb) {
-        let size = PatternSize
-        if (message) {
-            size += message.length
-        }
-
-        let buf = Buffer.allocUnsafe(size + HeaderSize).fill(0)
-        buf.writeUInt16LE(size)
-        buf.writeUInt8(pattern, HeaderSize)
-        if (message) {
-            message.copy(buf, HeaderSize + PatternSize, 0, message.length)
-        }
-
-        this._send_imp(buf, cb)
-    }
-
-    _pack(chunk, window = { offset: 0 }) {
-        if (this._packFinished()) {
+    // 提取数据包
+    _extract(chunk, window = { offset: 0 }) {
+        if (this._extractFinished()) {
             this.bodyLen = 0
             this.offset = 0
             this.headerFilled = 0
@@ -240,22 +329,21 @@ var session = class Session {
         }
 
         if (this.bodyLen !== 0) {
-            this._packWrite(chunk, window);
-            return this._pack(chunk, window)
+            this._extractBody(chunk, window);
+            return this._extract(chunk, window)
         }
         else {
             this._packWriteHeader(chunk, window)
-            if (!this._packHeader(chunk)) {
+            if (!this._extractHeader(chunk)) {
                 return false;
             }
 
-            return this._pack(chunk, window)
+            return this._extract(chunk, window)
         }
-
-        return true;
     }
 
-    _packHeader(chunk) {
+    // 提取数据包头
+    _extractHeader(chunk) {
         if (this.headerFilled === HeaderSize) {
             this.bodyLen = this.header.readUInt16LE(0)
             if (this.bodyLen === 0) {
@@ -263,27 +351,29 @@ var session = class Session {
                 return false
             }
 
-            if (this.bodyLen > MaxPackageSize) {
-                console.error("Package much tool huge : ", this.bodyLen, ", bigger than ", MaxPackageSize)
+            if (this.bodyLen > MaxBodySize) {
+                console.error("Package much tool huge : ", this.bodyLen, ", bigger than ", MaxBodySize)
                 return false
             }
 
-            this._resetPacker(this.bodyLen)
+            this._resetExtractor(this.bodyLen)
         }
 
         return true;
     }
 
-    _packFinished() {
+    // 提取是否已结束
+    _extractFinished() {
         return this.buf != null && this.offset === this.buf.length;
     }
 
-    _resetPacker(size) {
+    // 充值提取器
+    _resetExtractor(size) {
         this.buf = Buffer.allocUnsafe(size).fill(0)
         this.offset = 0
     }
 
-    _packWrite(buffer, wind) {
+    _extractBody(buffer, wind) {
         let size = Math.min(buffer.length - wind.offset, this.buf.length - this.offset)
         buffer.copy(this.buf, this.offset, wind.offset, wind.offset + size)
         this.offset += size;

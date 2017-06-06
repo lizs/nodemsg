@@ -20,6 +20,7 @@ const Pattern = Object.freeze({
 })
 
 const HeaderSize = 2
+const PackageCountSize = 1
 const PatternSize = 1
 const SerialSize = 2
 const ErrorNoSize = 2
@@ -33,4 +34,5 @@ module.exports = {
     SerialSize: SerialSize,
     ErrorNoSize: ErrorNoSize,
     MaxPackageSize: MaxPackageSize,
+    PackageCountSize: PackageCountSize,
 }
