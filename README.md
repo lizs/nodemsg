@@ -15,7 +15,7 @@ mom组件(https://git.oschina.net/lizs4ever/MOM.git)的Node.js实现
             cb(NetError.Success, null)
         }
 
-        onClosed(session) {
+        onClose(session) {
             console.log('session ', session.id, ' closed')
         }
 
