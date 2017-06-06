@@ -1,6 +1,6 @@
 netmsg
 ======================
-mom组件(https://git.oschina.net/lizs4ever/MOM.git)的Node.js实现
+mom组件(https://git.oschina.net/lizs4ever/MOM.git)的Node实现
 
 ##Getting started
 ```C#
