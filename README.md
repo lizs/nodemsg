@@ -1,4 +1,4 @@
-netmsg
+nodemsg
 ======================
 mom组件(https://git.oschina.net/lizs4ever/MOM.git)的Node实现
 
