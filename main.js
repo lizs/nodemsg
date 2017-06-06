@@ -22,23 +22,31 @@ class MyHandler {
         cb(NetError.Success, null)
     }
 
-    onClosed(session) {
+    onClose(session) {
         console.log('session ', session.id, ' closed')
     }
 
     onOpen(session) {
         console.log('session ', session.id, ' established')
+        this._request(session)
+    }
+
+    _request(session){   
+        let self = this;     
+        session.request(Buffer.alloc(20).fill(0), (err, message)=>{
+            self._request(session)
+        })
     }
 }
 
 function main(arg) {
-    // if (!arg || arg.length == 0) {
-    //     rl.question('输入启动参数(server/client) : ', (answer) => {
-    //         setImmediate(main, answer)
-    //     });
+    if (!arg || arg.length == 0) {
+        rl.question('输入启动参数(server/client) : ', (answer) => {
+            setImmediate(main, answer)
+        });
 
-    //     return
-    // }
+        return
+    }
 
     switch (arg) {
         case 'client': {
@@ -54,8 +62,10 @@ function main(arg) {
         }
 
         default:
-            let server = new tcpServer("localhost", 5002, new MyHandler())
-            server.start()
+            // let server = new tcpServer("localhost", 5002, new MyHandler())
+            // server.start()
+            let client = new tcpClient("localhost", 5002, new MyHandler())
+            client.start()
             break
     }
 }

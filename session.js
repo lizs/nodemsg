@@ -38,7 +38,7 @@ var session = class Session {
     // 请求
     request(message, cb) {
         // 分配序列号
-        let seirial = ++this.serialSeed
+        let serial = ++this.serialSeed % 65535
 
         // 插入请求池
         if (this.requestPool[serial]) {
@@ -53,7 +53,7 @@ var session = class Session {
 
         // 发送
         this._send(Pattern.Request, serial, null, message, (success) => {
-            if (!success) {
+            if (success != 0) {
                 this.requestPool[serial] = null
                 if (cb) {
                     cb(false, null)
@@ -133,7 +133,7 @@ var session = class Session {
         let serial = message.readUInt16LE()
         let cb = this.requestPool[serial]
         if (!cb) {
-            console.write("response serial %d not found", serial);
+            console.log("response serial %d not found", serial);
             return;
         }
 
@@ -156,7 +156,7 @@ var session = class Session {
             return
         }
 
-        let slice = raw.slice(PackCountSize, raw.length - PackCountSize)
+        let slice = raw.slice(PackCountSize, raw.length)
         this.slices.push(slice)
 
         if (cnt == 1) {
@@ -176,7 +176,7 @@ var session = class Session {
 
             // 清空slices
             this.slices = []
-            
+
             // 派发
             this._dispatch(message)
         }
@@ -229,19 +229,24 @@ var session = class Session {
 
     // 写
     _send(pattern, serial, en, message, cb) {
-        let buffers = this._pack_write(pattern, serial, en, message)
+        try {
+            let buffers = this._pack_write(pattern, serial, en, message)
 
-        let left = buffers.length
-        let finished = true
-        for (let i = 0; i < buffers.length; ++i) {
-            this._send_imp(buffers[i], (success) => {
-                --left
-                finished &= success
-                if (left == 0) {
-                    if (cb)
-                        cb(finished)
-                }
-            })
+            let left = buffers.length
+            let finished = true
+            for (let i = 0; i < buffers.length; ++i) {
+                this._send_imp(buffers[i], (success) => {
+                    --left
+                    finished &= success
+                    if (left == 0) {
+                        if (cb)
+                            cb(finished)
+                    }
+                })
+            }
+        }
+        catch (e) {
+            console.log(e)
         }
     }
 
@@ -249,11 +254,11 @@ var session = class Session {
     _pack_write(pattern, serial, en, message) {
         let size = PackCountSize + PatternSize
 
-        if (serial || serial == 0) {
+        if (serial && typeof (serial) == 'number' || serial === 0) {
             size += SerialSize
         }
 
-        if (en || en == 0) {
+        if (en && typeof (en) == 'number' || en === 0) {
             size += ErrorNoSize
         }
 
@@ -268,12 +273,12 @@ var session = class Session {
         buf.writeUInt8(pattern, offset) // Pattern
         offset += PatternSize
 
-        if (serial || serial == 0) {
+        if (serial && typeof (serial) == 'number' || serial == 0) {
             buf.writeUInt16LE(serial, offset)   // serial
             offset += SerialSize
         }
 
-        if (en || en == 0) {
+        if (en && typeof (en) == 'number' || en == 0) {
             buf.writeUInt16LE(en, offset)    // error number
             offset += ErrorNoSize
         }
